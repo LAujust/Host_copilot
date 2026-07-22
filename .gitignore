@@ -6,6 +6,9 @@ __pycache__/
 #Catalogs
 Catalogs/
 
+#._
+._*
+
 # C extensions
 *.so
 
