@@ -9,6 +9,8 @@ Catalogs/
 #._
 ._*
 
+EP_data/
+
 # C extensions
 *.so
 
