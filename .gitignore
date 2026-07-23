@@ -11,6 +11,9 @@ Catalogs/
 
 EP_data/
 
+examples/EP_data
+examples/process_ep_transients.py
+
 # C extensions
 *.so
 
