@@ -35,7 +35,7 @@ class HostPipeline:
         fov = (3*self.r_arcsec/3600)**2
 
         if self.quick:
-            if self.galaxy_finder.reglade_df:
+            if len(self.galaxy_finder.reglade_df)>0 or self.galaxy_finder.reglade_df is not None:
                 cat_table = Table.from_pandas(self.galaxy_finder.reglade_df)
                 #Only REGLADE catalog
                 print(f"")
@@ -86,6 +86,7 @@ class HostPipeline:
     
 
     def run(self):
+        print('=' * 50)
         
         if self.quick:
             print("[QUICK MODE]")
@@ -93,6 +94,8 @@ class HostPipeline:
             print("Searching for galaxies...")
             self.galaxy_finder.run(quick=self.quick)
             aladin, cat_table = self.filter_and_visualize()
+            print('HostPipeline run completed.')
+            print('=' * 50)
             return aladin, cat_table
 
             # # Step 2: Get cutout images
@@ -104,8 +107,7 @@ class HostPipeline:
             #     print("Failed to retrieve cutout images.")
             
             
-        print('HostPipeline run completed.')
-        print('=' * 50)
+
                 
             
     
