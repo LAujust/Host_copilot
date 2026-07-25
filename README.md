@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🛰️ Host Copilot
+<img src="HC_logo.png" alt="Host Copilot logo" width="560">
+
+# Host Copilot
 
 **Automatic host-galaxy identification pipeline for astronomical transients**
 
