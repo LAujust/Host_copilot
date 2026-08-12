@@ -87,6 +87,20 @@ def _records(frame: pd.DataFrame) -> list[dict[str, Any]]:
     ]
 
 
+def _csv_records(
+    text: str, *, separator: str = ",", comment: str | None = None
+) -> list[dict[str, Any]]:
+    """Parse a CSV/TSV response, treating a blank result as zero rows."""
+
+    if not text.strip():
+        return []
+    try:
+        frame = pd.read_csv(StringIO(text), sep=separator, comment=comment)
+    except pd.errors.EmptyDataError:
+        return []
+    return _records(frame)
+
+
 def _first(row: dict[str, Any], names: Iterable[str]) -> Any:
     lowered = {str(key).casefold(): value for key, value in row.items()}
     for name in names:
@@ -100,6 +114,15 @@ def _text(value: Any) -> str:
     return "" if value is None else str(value).strip()
 
 
+def _magnitude(value: Any) -> float | None:
+    """Return a plausible optical magnitude, rejecting survey sentinels."""
+
+    magnitude = finite(value)
+    if magnitude is None or not -10.0 < magnitude < 60.0:
+        return None
+    return magnitude
+
+
 class CatalogProvider(ABC):
     name: str
     version: str
@@ -108,13 +131,11 @@ class CatalogProvider(ABC):
     def parameters(
         self, transient: TransientContext, config: SearchConfig
     ) -> dict[str, Any]:
-        loc = transient.localization
+        ra, dec, radius_arcsec = config.query_geometry(transient)
         return {
-            "ra": round(loc.ra_deg, 8),
-            "dec": round(loc.dec_deg, 8),
-            "radius_arcsec": round(
-                loc.enclosing_radius_arcsec + config.association_margin_arcsec, 4
-            ),
+            "ra": round(ra, 8),
+            "dec": round(dec, 8),
+            "radius_arcsec": round(radius_arcsec, 4),
             "max_rows": config.max_rows,
             "mode": config.mode,
             "z_max": config.z_max,
@@ -221,16 +242,10 @@ class RegaladeProvider(CatalogProvider):
     def fetch(
         self, transient: TransientContext, config: SearchConfig
     ) -> list[dict[str, Any]]:
-        radius = (
-            transient.localization.enclosing_radius_arcsec
-            + config.association_margin_arcsec
-        )
+        ra, dec, radius = config.query_geometry(transient)
         parameters = {
             "-source": self.version,
-            "-c": (
-                f"{transient.localization.ra_deg:.8f} "
-                f"{transient.localization.dec_deg:+.8f}"
-            ),
+            "-c": f"{ra:.8f} {dec:+.8f}",
             "-c.rs": f"{radius:.5f}",
             "-out.max": config.max_rows,
             "-out.all": "",
@@ -244,7 +259,8 @@ class RegaladeProvider(CatalogProvider):
             float(config.provider_timeout_seconds),
             params=parameters,
         )
-        frame = pd.read_csv(StringIO(response.text), sep="\t", comment="#")
+        records = _csv_records(response.text, separator="\t", comment="#")
+        frame = pd.DataFrame(records)
         if frame.empty or "RAJ2000" not in frame.columns:
             return []
         frame["RAJ2000"] = pd.to_numeric(frame["RAJ2000"], errors="coerce")
@@ -296,7 +312,7 @@ class RegaladeProvider(CatalogProvider):
                     redshift_error=redshift_error,
                     redshift_kind=redshift_kind if redshift is not None else "unknown",
                     redshift_measurements=measurements,
-                    magnitude_r=finite(_first(row, ("rmag", "rmagpsf"))),
+                    magnitude_r=_magnitude(_first(row, ("rmag", "rmagpsf"))),
                     log_stellar_mass=finite(_first(row, ("logM", "logm"))),
                     quality_flags=flags,
                     extra={
@@ -337,19 +353,17 @@ class TapProvider(CatalogProvider):
             if marker in response.text:
                 message = response.text.split(marker, 1)[1].split("</INFO>", 1)[0]
             raise ProviderSchemaError(message)
-        return _records(pd.read_csv(StringIO(response.text)))
+        return _csv_records(response.text)
 
 
 def _cone_clause(
     ra_column: str, dec_column: str, transient: TransientContext, config: SearchConfig
 ) -> str:
-    loc = transient.localization
-    radius_deg = (
-        loc.enclosing_radius_arcsec + config.association_margin_arcsec
-    ) / 3600.0
+    search_ra, search_dec, radius_arcsec = config.query_geometry(transient)
+    radius_deg = radius_arcsec / 3600.0
     return (
         f"'t'=q3c_radial_query({ra_column},{dec_column},"
-        f"{loc.ra_deg:.8f},{loc.dec_deg:.8f},{radius_deg:.8f})"
+        f"{search_ra:.8f},{search_dec:.8f},{radius_deg:.8f})"
     )
 
 
@@ -432,7 +446,7 @@ class LegacySurveyProvider(TapProvider):
                     redshift_error=z_error,
                     redshift_kind=z_kind,
                     redshift_measurements=measurements,
-                    magnitude_r=finite(_first(row, ("mag_r",))),
+                    magnitude_r=_magnitude(_first(row, ("mag_r",))),
                     morphology=morphology,
                     is_star=secure_star,
                     quality_flags=["legacy_psf"] if morphology == "PSF" else [],
@@ -611,25 +625,21 @@ class PanStarrsProvider(CatalogProvider):
     def fetch(
         self, transient: TransientContext, config: SearchConfig
     ) -> list[dict[str, Any]]:
-        loc = transient.localization
-        radius = (
-            loc.enclosing_radius_arcsec + config.association_margin_arcsec
-        ) / 3600.0
+        ra, dec, radius_arcsec = config.query_geometry(transient)
+        radius = radius_arcsec / 3600.0
         response = _bounded_request(
             "GET",
             self.endpoint,
             float(config.provider_timeout_seconds),
             params={
-                "ra": loc.ra_deg,
-                "dec": loc.dec_deg,
+                "ra": ra,
+                "dec": dec,
                 "radius": radius,
                 "nDetections.gt": 4,
                 "pagesize": config.max_rows,
             },
         )
-        if not response.text.strip():
-            return []
-        return _records(pd.read_csv(StringIO(response.text)))[: config.max_rows]
+        return _csv_records(response.text)[: config.max_rows]
 
     def normalize(self, rows: list[dict[str, Any]]) -> list[HostCandidate]:
         normalized: list[HostCandidate] = []
@@ -640,8 +650,8 @@ class PanStarrsProvider(CatalogProvider):
                 continue
             source_id = _text(_first(row, ("objID", "objid", "objName")))
             name = _text(_first(row, ("objName", "objname")))
-            psf = finite(_first(row, ("rMeanPSFMag", "rmeanpsfmag")))
-            kron = finite(_first(row, ("rMeanKronMag", "rmeankronmag")))
+            psf = _magnitude(_first(row, ("rMeanPSFMag", "rmeanpsfmag")))
+            kron = _magnitude(_first(row, ("rMeanKronMag", "rmeankronmag")))
             extended = psf is not None and kron is not None and psf - kron > 0.05
             normalized.append(
                 HostCandidate(
@@ -651,7 +661,7 @@ class PanStarrsProvider(CatalogProvider):
                     name=name,
                     catalogs=[self.name],
                     catalog_ids={self.name: source_id},
-                    magnitude_r=kron or psf,
+                    magnitude_r=kron if kron is not None else psf,
                     morphology="extended" if extended else "compact",
                     quality_flags=[] if extended else ["panstarrs_compact"],
                 )
@@ -667,17 +677,15 @@ class NedProvider(CatalogProvider):
     def fetch(
         self, transient: TransientContext, config: SearchConfig
     ) -> list[dict[str, Any]]:
-        loc = transient.localization
-        radius_arcmin = (
-            loc.enclosing_radius_arcsec + config.association_margin_arcsec
-        ) / 60.0
+        ra, dec, radius_arcsec = config.query_geometry(transient)
+        radius_arcmin = radius_arcsec / 60.0
         response = _bounded_request(
             "GET",
             self.endpoint,
             float(config.provider_timeout_seconds),
             params={
-                "LON": f"{loc.ra_deg}d",
-                "LAT": f"{loc.dec_deg}d",
+                "LON": f"{ra}d",
+                "LAT": f"{dec}d",
                 "CSYS": "Equatorial",
                 "EQUINOX": "J2000",
                 "RADIUS": radius_arcmin,

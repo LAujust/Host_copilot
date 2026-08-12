@@ -47,3 +47,19 @@ def test_mode_defaults_are_distinct():
     assert full.deadline_seconds == 180.0
     assert "legacy" in full.providers
     assert full.image_recovery is True
+
+
+def test_explicit_query_geometry_overrides_localization_margin():
+    transient = TransientContext(CircleLocalization(10.0, 20.0, 10.0))
+    config = SearchConfig(
+        mode="full",
+        search_ra_deg=10.1,
+        search_dec_deg=20.1,
+        search_radius_arcsec=20.0,
+    )
+    assert config.query_geometry(transient) == pytest.approx((10.1, 20.1, 20.0))
+
+
+def test_query_geometry_override_must_be_complete():
+    with pytest.raises(ValueError, match="must be supplied together"):
+        SearchConfig(mode="full", search_ra_deg=10.0)

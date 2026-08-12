@@ -5,11 +5,13 @@ from __future__ import annotations
 import math
 from pathlib import Path
 from typing import Any
+import warnings
 
 import astropy.units as u
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.stats import SigmaClip
-from astropy.wcs import WCS
+from astropy.wcs import FITSFixedWarning, WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
 import numpy as np
 import pandas as pd
@@ -35,22 +37,29 @@ class ImageRecovery:
     def _cutout_path(
         self, transient: TransientContext, config: SearchConfig
     ) -> Path | None:
-        for filename in ("ps1_r_ref.fits", "ls_r.fits"):
+        ra, dec, query_radius = config.query_geometry(transient)
+        for filename in ("ps1_r_ref.fits", "ls_r.fits", "ls_r_science.fits"):
             candidate = self.save_path / filename
-            if candidate.exists():
+            if candidate.exists() and self._covers_search(
+                candidate, ra, dec, query_radius
+            ):
                 return candidate
         loc = transient.localization
-        radius = loc.enclosing_radius_arcsec + min(
-            config.association_margin_arcsec, 60.0
-        )
+        if config.search_radius_arcsec is not None:
+            ra, dec, radius = config.query_geometry(transient)
+        else:
+            ra, dec = loc.ra_deg, loc.dec_deg
+            radius = loc.enclosing_radius_arcsec + min(
+                config.association_margin_arcsec, 60.0
+            )
         size_pixels = max(64, int(math.ceil(2.0 * radius / 0.262)))
 
         def download_legacy(product: str, layer: str) -> Path:
             response = requests.get(
                 "https://www.legacysurvey.org/viewer/fits-cutout",
                 params={
-                    "ra": loc.ra_deg,
-                    "dec": loc.dec_deg,
+                    "ra": ra,
+                    "dec": dec,
                     "layer": layer,
                     "pixscale": 0.262,
                     "bands": "r",
@@ -82,8 +91,8 @@ class ImageRecovery:
         # directly so a second Legacy Survey attempt is not made.
         try:
             path = Imager(
-                loc.ra_deg,
-                loc.dec_deg,
+                ra,
+                dec,
                 radius,
                 band="r",
                 save_path=str(self.save_path),
@@ -91,6 +100,33 @@ class ImageRecovery:
             return None if path is None else Path(path)
         except Exception:
             return None
+
+    def get_reference_cutout(
+        self, transient: TransientContext, config: SearchConfig
+    ) -> Path | None:
+        """Return a cached or newly downloaded science reference FITS cutout."""
+
+        return self._cutout_path(transient, config)
+
+    @classmethod
+    def _covers_search(
+        cls, path: Path, ra_deg: float, dec_deg: float, radius_arcsec: float
+    ) -> bool:
+        """Check that a cached cutout contains the requested cone."""
+
+        try:
+            data, header = cls._read_image(path)
+            wcs = cls._celestial_wcs(header)
+            x, y = wcs.world_to_pixel(SkyCoord(ra_deg * u.deg, dec_deg * u.deg))
+            scales = proj_plane_pixel_scales(wcs) * u.deg
+            radius_pixels = radius_arcsec / float(np.min(scales.to_value(u.arcsec)))
+            height, width = data.shape
+            return (
+                radius_pixels <= x + 0.5 < width - radius_pixels + 0.5
+                and radius_pixels <= y + 0.5 < height - radius_pixels + 0.5
+            )
+        except Exception:
+            return False
 
     @staticmethod
     def _read_image(path: Path) -> tuple[np.ndarray, fits.Header]:
@@ -104,6 +140,12 @@ class ImageRecovery:
                 if data.ndim == 2:
                     return data, hdu.header.copy()
         raise ValueError(f"no two-dimensional image found in {path}")
+
+    @staticmethod
+    def _celestial_wcs(header: fits.Header) -> WCS:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FITSFixedWarning)
+            return WCS(header).celestial
 
     def run(
         self, transient: TransientContext, config: SearchConfig
@@ -124,7 +166,7 @@ class ImageRecovery:
             if path is None:
                 return [], {"state": "no_cutout"}
             data, header = self._read_image(path)
-            wcs = WCS(header).celestial
+            wcs = self._celestial_wcs(header)
             mask = ~np.isfinite(data)
             finite_pixels = data[~mask]
             if finite_pixels.size < 100:

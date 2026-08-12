@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 import hashlib
 import math
 from typing import Iterable
 
 import astropy.units as u
-from astropy.coordinates import SkyCoord
+from astropy.coordinates import SkyCoord, search_around_sky
 from scipy.special import ndtr
 
 from .models import HostCandidate, SearchConfig, TransientContext
@@ -123,15 +124,58 @@ def deduplicate_candidates(candidates: Iterable[HostCandidate]) -> list[HostCand
             default=99,
         ),
     )
+    if not ordered:
+        return []
+
+    # Build the spherical neighbor index once. The former implementation
+    # constructed two SkyCoord objects for every candidate pair, which made a
+    # typical full-mode field with several thousand sources prohibitively
+    # slow. Five arcseconds covers both the 0.75-arcsec coordinate match and
+    # the broader same-name test.
+    coordinates = SkyCoord(
+        [candidate.ra_deg for candidate in ordered] * u.deg,
+        [candidate.dec_deg for candidate in ordered] * u.deg,
+        frame="icrs",
+    )
+    left_indices, right_indices, _, _ = search_around_sky(
+        coordinates, coordinates, 5.0 * u.arcsec
+    )
+    prior_neighbors: list[list[int]] = [[] for _ in ordered]
+    for left, right in zip(left_indices, right_indices, strict=True):
+        left_index = int(left)
+        right_index = int(right)
+        if right_index < left_index:
+            prior_neighbors[left_index].append(right_index)
+
     merged: list[HostCandidate] = []
-    for candidate in ordered:
-        match = next(
-            (item for item in merged if _same_candidate(item, candidate)), None
+    raw_to_merged: dict[int, int] = {}
+    id_to_merged: dict[tuple[str, str], int] = {}
+    for raw_index, candidate in enumerate(ordered):
+        possible_matches = {
+            id_to_merged[(catalog, source_id)]
+            for catalog, source_id in candidate.catalog_ids.items()
+            if source_id and (catalog, source_id) in id_to_merged
+        }
+        possible_matches.update(
+            raw_to_merged[neighbor] for neighbor in prior_neighbors[raw_index]
         )
-        if match is None:
+        match_index = next(
+            (
+                index
+                for index in sorted(possible_matches)
+                if _same_candidate(merged[index], candidate)
+            ),
+            None,
+        )
+        if match_index is None:
             merged.append(candidate)
+            match_index = len(merged) - 1
         else:
-            _merge_candidate(match, candidate)
+            _merge_candidate(merged[match_index], candidate)
+        raw_to_merged[raw_index] = match_index
+        for catalog, source_id in merged[match_index].catalog_ids.items():
+            if source_id:
+                id_to_merged.setdefault((catalog, source_id), match_index)
     return merged
 
 
@@ -248,6 +292,35 @@ def empirical_unknown_redshift_probability(
     return (below + 1.0) / (len(references) + 2.0), "field_magnitude_beta"
 
 
+def _unknown_redshift_estimator(population: list[HostCandidate], z_max: float):
+    """Build an O(log N) same-field magnitude estimator for ranking."""
+
+    references = sorted(
+        (item.magnitude_r, item.redshift)
+        for item in population
+        if item.redshift is not None
+        and item.magnitude_r is not None
+        and item.redshift_kind in {"spec", "photo", "distance"}
+    )
+    magnitudes = [magnitude for magnitude, _ in references]
+    prefix_below = [0]
+    for _, redshift in references:
+        prefix_below.append(prefix_below[-1] + int(redshift <= z_max))
+
+    def estimate(candidate: HostCandidate) -> tuple[float, str]:
+        if candidate.magnitude_r is None:
+            return 0.5, "neutral_no_magnitude"
+        lower = bisect_left(magnitudes, candidate.magnitude_r - 1.0)
+        upper = bisect_right(magnitudes, candidate.magnitude_r + 1.0)
+        count = upper - lower
+        if count < 5:
+            return 0.5, "neutral_insufficient_field_calibration"
+        below = prefix_below[upper] - prefix_below[lower]
+        return (below + 1.0) / (count + 2.0), "field_magnitude_beta"
+
+    return estimate
+
+
 def filter_by_redshift(
     candidates: Iterable[HostCandidate], config: SearchConfig
 ) -> list[HostCandidate]:
@@ -294,33 +367,33 @@ def rank_candidates(
 
     if not candidates:
         return candidates
-    area_arcsec2 = (
-        math.pi
-        * (
-            transient.localization.enclosing_radius_arcsec
-            + config.association_margin_arcsec
-        )
-        ** 2
-    )
+    _, _, query_radius_arcsec = config.query_geometry(transient)
+    area_arcsec2 = math.pi * query_radius_arcsec**2
     surface_density = len(candidates) / max(area_arcsec2, 1.0)
 
     host_priors: list[float] = []
     for candidate in candidates:
         if candidate.log_stellar_mass is not None:
-            raw_prior = 10.0 ** (candidate.log_stellar_mass - 10.0)
+            # Clamp in log space before exponentiation. Besides expressing
+            # the intended [0.01, 100] prior range, this prevents malformed
+            # catalog sentinel values from overflowing here.
+            exponent = max(-2.0, min(2.0, candidate.log_stellar_mass - 10.0))
+            raw_prior = 10.0**exponent
         elif candidate.magnitude_r is not None:
-            raw_prior = 10.0 ** (-0.4 * (candidate.magnitude_r - 20.0))
+            exponent = max(-2.0, min(2.0, -0.4 * (candidate.magnitude_r - 20.0)))
+            raw_prior = 10.0**exponent
         else:
             raw_prior = 0.25
         host_priors.append(min(100.0, max(0.01, raw_prior)))
     prior_normalizer = max(host_priors)
+    estimate_unknown_redshift = _unknown_redshift_estimator(
+        candidates, float(config.z_max)
+    )
 
     for candidate, host_prior in zip(candidates, host_priors, strict=True):
         add_geometry(candidate, transient)
         if transient.redshift is None and candidate.redshift is None:
-            probability, method = empirical_unknown_redshift_probability(
-                candidate, candidates, float(config.z_max)
-            )
+            probability, method = estimate_unknown_redshift(candidate)
             candidate.redshift_score = probability
             candidate.extra["unknown_z_probability"] = probability
             candidate.extra["unknown_z_probability_method"] = method

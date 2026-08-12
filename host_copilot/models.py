@@ -195,6 +195,9 @@ class SearchConfig:
     deadline_seconds: float | None = None
     provider_timeout_seconds: float | None = None
     association_margin_arcsec: float = 120.0
+    search_ra_deg: float | None = None
+    search_dec_deg: float | None = None
+    search_radius_arcsec: float | None = None
     max_rows: int = 5000
     cache_dir: str | Path | None = None
     positive_cache_days: float = 30.0
@@ -218,6 +221,25 @@ class SearchConfig:
             self.provider_timeout_seconds = 25.0 if self.mode == "quick" else 60.0
         if self.association_margin_arcsec < 0:
             raise ValueError("association_margin_arcsec cannot be negative")
+        search_values = (
+            self.search_ra_deg,
+            self.search_dec_deg,
+            self.search_radius_arcsec,
+        )
+        if any(value is not None for value in search_values) and not all(
+            value is not None for value in search_values
+        ):
+            raise ValueError(
+                "search_ra_deg, search_dec_deg, and search_radius_arcsec "
+                "must be supplied together"
+            )
+        if self.search_ra_deg is not None and self.search_dec_deg is not None:
+            _validate_position(self.search_ra_deg, self.search_dec_deg)
+        if self.search_radius_arcsec is not None and (
+            not math.isfinite(self.search_radius_arcsec)
+            or self.search_radius_arcsec <= 0
+        ):
+            raise ValueError("search_radius_arcsec must be positive and finite")
         if self.max_rows <= 0:
             raise ValueError("max_rows must be positive")
         if self.image_recovery is None:
@@ -238,6 +260,26 @@ class SearchConfig:
                     "gaia",
                 )
             )
+
+    def query_geometry(self, transient: TransientContext) -> tuple[float, float, float]:
+        """Return the catalog-query center and exact cone radius in arcseconds."""
+
+        if (
+            self.search_ra_deg is not None
+            and self.search_dec_deg is not None
+            and self.search_radius_arcsec is not None
+        ):
+            return (
+                self.search_ra_deg,
+                self.search_dec_deg,
+                self.search_radius_arcsec,
+            )
+        localization = transient.localization
+        return (
+            localization.ra_deg,
+            localization.dec_deg,
+            localization.enclosing_radius_arcsec + self.association_margin_arcsec,
+        )
 
 
 ProviderState = Literal[

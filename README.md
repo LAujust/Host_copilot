@@ -143,6 +143,18 @@ calibrated host probability.  Until calibration gates are satisfied,
 ``posterior_probability`` is deliberately unset and the pipeline does not emit
 ``secure`` or ``probable`` probability labels.
 
+A provider state of `empty` means the remote query completed successfully but
+returned no sources in the requested cone. It is a complete result, not a
+service failure; candidate CSV and ipyaladin outputs remain valid when empty.
+
+### Interactive quick/full notebook
+
+Open `examples/host_search_quick_full.ipynb` to enter one EP position,
+`r_err`, and optional OT coordinates, then run quick and full searches side by
+side. The notebook saves both candidate tables, plots the survey reference
+FITS with the EP error circle, search cone, OT, and candidates, and produces
+separate ipyaladin widgets for the two modes.
+
 ### Output Example
 
 ```
@@ -236,6 +248,44 @@ returned catalog row is therefore not automatically a host association.
 ## 🧪 Batch Processing
 
 The repository ships two batch-processing scripts for running the pipeline on entire transient catalogs:
+
+### `examples/process_ep_transients_modes.py` (recommended)
+
+Processes every row in `EP_data/EP_transients.csv` with the structured API.
+Quick and full outputs are kept separate under `examples/EP_data/quick/` and
+`examples/EP_data/full/`. Each transient receives `host_candidates.csv`, full
+provider provenance in `search_result.json`, and a resumable batch record. A
+mode-level `summary.csv` contains the top-ranked candidate and completeness
+state for every transient.
+
+The batch search geometry is selected per row: if `o_RA` and `o_Dec` define an
+optical transient (OT), the cone is centered on the OT with a 20-arcsec radius.
+Otherwise it is centered on the EP position with radius `r_err + 10 arcsec`.
+The original EP localization is retained for association scoring and output
+provenance. The two radii can be adjusted with `--ot-radius` and
+`--ep-padding` when needed.
+
+```bash
+# Rapid REGALADE search, z < 0.1
+python examples/process_ep_transients_modes.py --mode quick
+
+# Comprehensive search, z < 0.5
+python examples/process_ep_transients_modes.py --mode full
+
+# Full catalog search restricted to z < 0.3, without image recovery
+python examples/process_ep_transients_modes.py \
+  --mode full --z-max 0.3 --no-image-recovery
+
+# Validate all coordinates and localization radii without network calls
+python examples/process_ep_transients_modes.py --mode full --dry-run
+
+# Continue an interrupted run using completed per-transient records
+python examples/process_ep_transients_modes.py --mode full --resume
+```
+
+Use `--limit` and `--start` for subsets, or `--providers` for an explicit
+comma-separated provider list. Run `--help` for timeout and search-radius
+controls.
 
 ### `examples/process_ep_transients.py`
 

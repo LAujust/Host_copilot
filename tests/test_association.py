@@ -1,5 +1,8 @@
+import math
+
 import pytest
 
+import host_copilot.association as association
 from host_copilot.association import (
     apply_gaia_star_veto,
     deduplicate_candidates,
@@ -53,6 +56,26 @@ def test_deduplication_merges_same_named_regalade_rows_but_not_close_pair():
     merged = deduplicate_candidates([first, duplicate, close_pair])
     assert len(merged) == 2
     assert set(merged[0].catalogs) == {"regalade", "legacy"}
+
+
+def test_deduplication_uses_spatial_neighbors_not_all_pairs(monkeypatch):
+    candidates = [
+        candidate(str(index), 10.0 + index * 10.0 / 3600.0, 20.0)
+        for index in range(500)
+    ]
+    comparison_count = 0
+    original = association._same_candidate
+
+    def count_comparison(left, right):
+        nonlocal comparison_count
+        comparison_count += 1
+        return original(left, right)
+
+    monkeypatch.setattr(association, "_same_candidate", count_comparison)
+    merged = deduplicate_candidates(candidates)
+
+    assert len(merged) == len(candidates)
+    assert comparison_count == 0
 
 
 def test_quick_requires_known_redshift_below_cut():
@@ -117,3 +140,18 @@ def test_unknown_redshift_probability_uses_same_field_magnitude_bin():
     )
     assert probability == pytest.approx(0.5)
     assert method == "field_magnitude_beta"
+
+
+def test_malformed_magnitude_prior_cannot_overflow():
+    transient = TransientContext(CircleLocalization(10.0, 20.0, 10.0))
+    malformed = candidate("sentinel", 10.0, 20.0, z=None)
+    malformed.magnitude_r = -999.0
+
+    ranked = rank_candidates(
+        [malformed],
+        transient,
+        SearchConfig(mode="full", image_recovery=False),
+    )
+
+    assert ranked[0].host_prior_score == pytest.approx(1.0)
+    assert math.isfinite(ranked[0].association_score)

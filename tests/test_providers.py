@@ -1,9 +1,13 @@
+from types import SimpleNamespace
+
+from host_copilot.cache import QueryCache
 from host_copilot.models import CircleLocalization, SearchConfig, TransientContext
 from host_copilot.providers import (
     DesiProvider,
     GaiaProvider,
     LegacySurveyProvider,
     NedProvider,
+    PanStarrsProvider,
     RegaladeProvider,
 )
 
@@ -27,6 +31,44 @@ def test_regalade_normalization_preserves_shape_and_redshift_flags():
     assert result[0].redshift_kind == "spec"
     assert result[0].semimajor_arcsec == 8.0
     assert "low_reliability" in result[0].quality_flags
+
+
+def test_regalade_comment_only_response_is_empty_not_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "host_copilot.providers._bounded_request",
+        lambda *args, **kwargs: SimpleNamespace(text="# VizieR\n# no rows\n"),
+    )
+    context = TransientContext(CircleLocalization(10.0, 20.0, 10.0))
+    config = SearchConfig(mode="quick", image_recovery=False, cache_dir=tmp_path)
+    result = RegaladeProvider().query(context, config, QueryCache(tmp_path))
+    assert result.candidates == []
+    assert result.status is not None
+    assert result.status.state == "empty"
+    assert result.status.error is None
+
+
+def test_panstarrs_blank_response_is_empty(monkeypatch):
+    monkeypatch.setattr(
+        "host_copilot.providers._bounded_request",
+        lambda *args, **kwargs: SimpleNamespace(text="\n"),
+    )
+    context = TransientContext(CircleLocalization(10.0, 20.0, 10.0))
+    rows = PanStarrsProvider().fetch(
+        context, SearchConfig(mode="full", image_recovery=False)
+    )
+    assert rows == []
+
+
+def test_tap_header_only_response_is_empty(monkeypatch):
+    monkeypatch.setattr(
+        "host_copilot.providers._bounded_request",
+        lambda *args, **kwargs: SimpleNamespace(text="ls_id,ra,dec\n"),
+    )
+    context = TransientContext(CircleLocalization(10.0, 20.0, 10.0))
+    rows = LegacySurveyProvider().fetch(
+        context, SearchConfig(mode="full", image_recovery=False)
+    )
+    assert rows == []
 
 
 def test_legacy_photo_z_and_shape_normalization():
@@ -80,6 +122,23 @@ def test_legacy_query_uses_spherical_index_and_photo_z_join():
     assert "BETWEEN" not in query
 
 
+def test_provider_query_uses_explicit_search_geometry():
+    context = TransientContext(
+        CircleLocalization(10.0, 20.0, 180.0),
+        optical_ra_deg=10.1,
+        optical_dec_deg=20.1,
+    )
+    config = SearchConfig(
+        mode="full",
+        search_ra_deg=10.1,
+        search_dec_deg=20.1,
+        search_radius_arcsec=20.0,
+        image_recovery=False,
+    )
+    query = LegacySurveyProvider().adql(context, config)
+    assert "10.10000000,20.10000000,0.00555556" in query
+
+
 def test_desi_query_uses_released_coordinate_and_boolean_columns():
     context = TransientContext(CircleLocalization(10.0, 20.0, 10.0))
     query = DesiProvider().adql(
@@ -104,3 +163,19 @@ def test_ned_current_field_names_normalize():
     )
     assert candidates[0].name == "Galaxy A"
     assert candidates[0].redshift_kind == "spec"
+
+
+def test_panstarrs_rejects_missing_magnitude_sentinel():
+    candidates = PanStarrsProvider().normalize(
+        [
+            {
+                "objID": 123,
+                "raMean": 10.0,
+                "decMean": 20.0,
+                "rMeanPSFMag": -999.0,
+                "rMeanKronMag": -999.0,
+            }
+        ]
+    )
+    assert candidates[0].magnitude_r is None
+    assert candidates[0].morphology == "compact"

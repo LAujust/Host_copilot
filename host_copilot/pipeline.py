@@ -10,7 +10,7 @@ import time
 from typing import Any
 
 import astropy.units as u
-from astropy.coordinates import Angle
+from astropy.coordinates import Angle, SkyCoord
 from astropy.table import Table
 
 from .association import (
@@ -171,6 +171,26 @@ class HostPipeline:
             executor.shutdown(wait=False, cancel_futures=True)
         return results
 
+    @staticmethod
+    def _within_query_cone(
+        candidates: list[HostCandidate],
+        transient: TransientContext,
+        config: SearchConfig,
+    ) -> list[HostCandidate]:
+        """Clip catalog and image rows to the configured circular search cone."""
+
+        if not candidates:
+            return []
+        ra, dec, radius_arcsec = config.query_geometry(transient)
+        center = SkyCoord(ra * u.deg, dec * u.deg, frame="icrs")
+        coordinates = SkyCoord(
+            [candidate.ra_deg for candidate in candidates] * u.deg,
+            [candidate.dec_deg for candidate in candidates] * u.deg,
+            frame="icrs",
+        )
+        inside = center.separation(coordinates).arcsec <= radius_arcsec
+        return [candidate for candidate, keep in zip(candidates, inside) if keep]
+
     def search(
         self,
         transient: TransientContext | None = None,
@@ -242,6 +262,10 @@ class HostPipeline:
         else:
             image_info = {"state": "disabled"}
 
+        pre_cone_count = len(host_candidates)
+        host_candidates = self._within_query_cone(host_candidates, transient, config)
+        post_cone_count = len(host_candidates)
+        gaia_sources = self._within_query_cone(gaia_sources, transient, config)
         host_candidates = deduplicate_candidates(host_candidates)
         apply_gaia_star_veto(host_candidates, gaia_sources)
         host_candidates = filter_by_redshift(host_candidates, config)
@@ -265,6 +289,9 @@ class HostPipeline:
                     len(item.candidates)
                     for name, item in provider_results.items()
                     if name != "gaia"
+                ),
+                "candidate_count_outside_query_cone": (
+                    pre_cone_count - post_cone_count
                 ),
                 "gaia_reference_count": len(gaia_sources),
             },
@@ -299,6 +326,19 @@ class HostPipeline:
         self.galaxy_finder.reglade_df = pd.DataFrame(records)
 
     def _candidate_visualization_table(self, result: HostSearchResult) -> Table:
+        names = (
+            "Name",
+            "RAJ2000",
+            "DEJ2000",
+            "z",
+            "R1",
+            "R2",
+            "PA",
+            "sep",
+            "rank",
+            "relative_probability",
+            "assessment",
+        )
         rows = []
         for candidate in result.candidates:
             rows.append(
@@ -316,22 +356,25 @@ class HostPipeline:
                     candidate.assessment,
                 )
             )
-        table = Table(
-            rows=rows,
-            names=(
-                "Name",
-                "RAJ2000",
-                "DEJ2000",
-                "z",
-                "R1",
-                "R2",
-                "PA",
-                "sep",
-                "rank",
-                "relative_probability",
-                "assessment",
-            ),
-        )
+        if rows:
+            table = Table(rows=rows, names=names)
+        else:
+            table = Table(
+                names=names,
+                dtype=(
+                    str,
+                    float,
+                    float,
+                    float,
+                    float,
+                    float,
+                    float,
+                    float,
+                    int,
+                    float,
+                    str,
+                ),
+            )
         table["R1"].unit = u.arcsec
         table["R2"].unit = u.arcsec
         table["PA"].unit = u.deg
@@ -348,10 +391,18 @@ class HostPipeline:
         if result is None:
             raise RuntimeError("search must run before visualization")
         loc = result.transient.localization
-        fov = max(0.02, 3.0 * loc.enclosing_radius_arcsec / 3600.0)
+        search_ra, search_dec, search_radius = result.config.query_geometry(
+            result.transient
+        )
+        search_center = SkyCoord(search_ra * u.deg, search_dec * u.deg, frame="icrs")
+        center_offset = float(loc.center.separation(search_center).arcsec)
+        displayed_radius = center_offset + max(
+            loc.enclosing_radius_arcsec, search_radius
+        )
+        fov = max(0.02, 2.4 * displayed_radius / 3600.0)
         aladin = Aladin(
             fov=fov,
-            target=loc.center,
+            target=search_center,
             survey="CDS/P/PanSTARRS/DR1/color-z-zg-g",
         )
         table = self._candidate_visualization_table(result)
@@ -366,6 +417,21 @@ class HostPipeline:
                 ),
                 color="cyan",
             )
+        if (
+            result.transient.optical_ra_deg is not None
+            and result.transient.optical_dec_deg is not None
+        ):
+            ot_table = Table(
+                rows=[
+                    (
+                        "OT",
+                        result.transient.optical_ra_deg,
+                        result.transient.optical_dec_deg,
+                    )
+                ],
+                names=("Name", "RAJ2000", "DEJ2000"),
+            )
+            aladin.add_table(ot_table, color="magenta")
         if isinstance(loc, CircleLocalization):
             region = CircleSkyRegion(
                 center=loc.center,
@@ -380,7 +446,12 @@ class HostPipeline:
                 angle=Angle(loc.position_angle_deg, "deg"),
                 visual={"edgecolor": "yellow", "linestyle": "dashed"},
             )
-        aladin.add_graphic_overlay_from_region([region])
+        search_region = CircleSkyRegion(
+            center=search_center,
+            radius=Angle(search_radius, "arcsec"),
+            visual={"edgecolor": "white", "linestyle": "dotted"},
+        )
+        aladin.add_graphic_overlay_from_region([region, search_region])
         result.aladin = aladin
         return aladin
 
