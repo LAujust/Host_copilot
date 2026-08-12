@@ -1,0 +1,2 @@
+Name,RAJ2000,DEJ2000,z,R1,R2,PA,sep,rank,relative_probability,assessment,inside_localization,footprint_overlap,redshift_score
+DESI J112645.58-071319.6,171.689926,-7.222114,0.0244251,10.8003712,5.1896768,149.954483,140.9652333188597,1,9.274591621512481e-32,strong_positional,True,True,1.0

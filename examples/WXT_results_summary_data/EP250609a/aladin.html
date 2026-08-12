@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EP250609a — HostPipeline quick-mode result</title>
+  <link rel="stylesheet"
+        href="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.css">
+  <style>
+    html, body, #aladin-lite-div { width: 100%; height: 100%; margin: 0; }
+    #message {
+      position: absolute; z-index: 10; top: 0.5rem; left: 0.5rem;
+      padding: 0.4rem 0.6rem; color: white; background: rgba(0, 0, 0, 0.65);
+      font: 13px sans-serif; border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+  <div id="message">EP250609a — HostPipeline quick-mode result</div>
+  <div id="aladin-lite-div"></div>
+  <script src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js"
+          charset="utf-8"></script>
+  <script>
+    const config = {"target": [329.313, -31.33], "radiusArcsec": 190.0, "fovDeg": 0.025069444444444443, "survey": "CDS/P/PanSTARRS/DR1/color-z-zg-g", "candidates": []};
+    A.init.then(() => {
+      const aladin = A.aladin("#aladin-lite-div", {
+        survey: config.survey,
+        fov: config.fovDeg,
+        target: `${config.target[0]} ${config.target[1]}`
+      });
+
+      const catalog = A.catalog({
+        name: "REGLADE candidates (z < 0.1)",
+        sourceSize: 8,
+        color: "cyan",
+        shape: "cross",
+        onClick: "showTable"
+      });
+      catalog.addSources(config.candidates.map((candidate) =>
+        A.source(candidate.ra, candidate.dec, {
+          Name: candidate.name,
+          z: candidate.z,
+          sep_arcsec: candidate.sep,
+          R1_arcsec: candidate.r1,
+          R2_arcsec: candidate.r2,
+          PA_deg: candidate.pa
+        })
+      ));
+      aladin.addCatalog(catalog);
+
+      const galaxies = A.graphicOverlay({color: "cyan", lineWidth: 2});
+      const ellipses = config.candidates
+        .filter((candidate) =>
+          candidate.r1 !== null && candidate.r2 !== null && candidate.pa !== null
+        )
+        .map((candidate) =>
+          A.ellipse(
+            candidate.ra,
+            candidate.dec,
+            candidate.r1 / 3600.0,
+            candidate.r2 / 3600.0,
+            candidate.pa
+          )
+        );
+      galaxies.addFootprints(ellipses);
+      aladin.addOverlay(galaxies);
+
+      const localization = A.graphicOverlay({color: "yellow", lineWidth: 2});
+      localization.setLineDash([8, 5]);
+      localization.addFootprints(
+        A.circle(
+          config.target[0],
+          config.target[1],
+          config.radiusArcsec / 3600.0
+        )
+      );
+      aladin.addOverlay(localization);
+    });
+  </script>
+</body>
+</html>

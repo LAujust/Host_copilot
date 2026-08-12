@@ -86,7 +86,7 @@ class Imager:
                 raise ValueError("color images are available only for jpg or png formats")
             if format not in ("jpg","png","fits"):
                 raise ValueError("format must be one of jpg, png, fits")
-            table = _getimages(ra,dec,filters=filters)
+            table = _getimages(ra,dec,band=filters)
             url = (f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?"
                 f"ra={ra}&dec={dec}&size={size}&format={format}")
             if output_size:

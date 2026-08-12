@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "host-copilot"
+version = "0.1.0"
+description = "Host-galaxy candidate search and ranking for astronomical transients"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+  "astropy>=6",
+  "astroquery>=0.4.7",
+  "ipyaladin>=0.7",
+  "matplotlib>=3.8",
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "photutils>=2",
+  "Pillow>=10",
+  "pyvo>=1.5",
+  "regions>=0.10",
+  "requests>=2.31",
+  "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "ruff>=0.3"]
+
+[tool.setuptools.packages.find]
+include = ["host_copilot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+extend-exclude = [
+  "host_copilot/catalog.py",
+  "host_copilot/image.py",
+  "host_copilot/utils.py",
+]

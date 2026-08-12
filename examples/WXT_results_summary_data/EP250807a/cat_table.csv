@@ -1,0 +1,2 @@
+Name,RAJ2000,DEJ2000,z,R1,R2,PA,sep,rank,relative_probability,assessment,inside_localization,footprint_overlap,redshift_score
+WISEA J184508.15+142043.,281.283936,14.345414,0.0896229,6.8900003,6.8900003,90.0,164.97615946539383,1,1.5572929557530583e-32,strong_positional,True,True,1.0

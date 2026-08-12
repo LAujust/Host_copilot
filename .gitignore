@@ -5,6 +5,7 @@ __pycache__/
 
 #Catalogs
 Catalogs/
+.host_copilot_cache/
 
 #._
 ._*

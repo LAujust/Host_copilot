@@ -1,0 +1,2 @@
+Name,RAJ2000,DEJ2000,z,R1,R2,PA,sep,rank,relative_probability,assessment,inside_localization,footprint_overlap,redshift_score
+PS J051958.18+253323.9,79.992416,25.556625,0.0543168,3.0,3.0,0.0,151.45864340314884,1,9.167566972346907e-140,strong_positional,True,True,1.0

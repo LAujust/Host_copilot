@@ -1,6 +1,29 @@
-__version__ = "0.0.1"
+"""Host Copilot public Python API."""
 
-from .utils import *
-from .catalog import *
-from .image import *
-from .pipeline import *
+__version__ = "0.1.0"
+
+from .catalog import GalaxyFinder
+from .image import Imager
+from .models import (
+    CircleLocalization,
+    EllipseLocalization,
+    HostCandidate,
+    HostSearchResult,
+    ProviderStatus,
+    SearchConfig,
+    TransientContext,
+)
+from .pipeline import HostPipeline
+
+__all__ = [
+    "CircleLocalization",
+    "EllipseLocalization",
+    "GalaxyFinder",
+    "HostCandidate",
+    "HostPipeline",
+    "HostSearchResult",
+    "Imager",
+    "ProviderStatus",
+    "SearchConfig",
+    "TransientContext",
+]

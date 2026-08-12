@@ -46,11 +46,11 @@ The pipeline is designed for — but not limited to — transients from the **Ei
 git clone https://github.com/LAujust/host_copilot.git
 cd host_copilot
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Install the package (optional)
+# Install the package and runtime dependencies
 pip install -e .
+
+# Development/test dependencies (optional)
+pip install -e '.[test]'
 ```
 
 ### Dependencies
@@ -64,6 +64,8 @@ pip install -e .
 | `requests` | HTTP queries for Pan-STARRS, NED |
 | `pyvo` | TAP & SIA queries for Legacy Survey (NOIRLab) |
 | `pandas` | Catalog manipulation |
+| `photutils` | Image-only source detection and segmentation |
+| `scipy` | Statistical and image-analysis support |
 | `Pillow` | Image handling |
 | `matplotlib` | Plotting |
 
@@ -89,6 +91,58 @@ aladin, cat_table = hostpipe.run()
 # `cat_table` is an Astropy Table of candidate galaxies
 ```
 
+### Structured quick and full searches
+
+The compatibility ``run()`` method above remains available.  New analysis code
+should use the structured API, which exposes catalog provenance, partial-service
+failures, geometry tests, redshift provenance, and auditable ranking terms:
+
+```python
+from host_copilot import (
+    CircleLocalization,
+    HostPipeline,
+    SearchConfig,
+    TransientContext,
+)
+
+transient = TransientContext(
+    name="EP260321a",
+    localization=CircleLocalization(
+        ra_deg=149.9287,
+        dec_deg=0.4177,
+        radius_arcsec=10.0,
+        confidence=0.90,
+    ),
+    optical_ra_deg=149.928704,
+    optical_dec_deg=0.418445,
+    redshift=0.0343,
+)
+
+pipeline = HostPipeline(localization=transient.localization, save_path="results")
+
+# REGALADE only, z < 0.1, with a 30-second deadline.
+quick = pipeline.search(
+    transient,
+    SearchConfig(mode="quick"),
+)
+
+# Multi-catalog search, z < 0.5 by default, including unknown-z and
+# image-only candidates.  Successful partial results survive provider outages.
+full = pipeline.search(
+    transient,
+    SearchConfig(mode="full"),
+)
+
+full.to_csv("results/host_candidates.csv")
+print(full.provider_status)
+print(full.warnings)
+```
+
+``relative_probability`` is a normalized, transparent ranking weight, not a
+calibrated host probability.  Until calibration gates are satisfied,
+``posterior_probability`` is deliberately unset and the pipeline does not emit
+``secure`` or ``probable`` probability labels.
+
 ### Output Example
 
 ```
@@ -113,30 +167,33 @@ HostPipeline run completed.
 ```
                   ┌─────────────────────────────────┐
                   │        HostPipeline              │
-                  │  (orchestrator + visualization)  │
+                  │ deadlines + partial-state output │
                   └──────────┬──────────────────────┘
                              │
               ┌──────────────┼──────────────┐
               ▼              ▼              ▼
     ┌──────────────────┐ ┌──────┐  ┌──────────────────┐
-    │   GalaxyFinder    │ │Imager│  │   Aladin Lite    │
-    │  (catalog query)  │ │(FITS)│  │ (visualization)  │
+    │ Catalog providers │ │ Cache│  │ Image recovery   │
+    │ (7 remote feeds)  │ │      │  │ + Photutils     │
     └────────┬─────────┘ └──────┘  └──────────────────┘
              │
     ┌────────┼────────┬───────┬──────────┐
     ▼        ▼        ▼       ▼          ▼
-  REGALADE  PS DR2  LS DR10  NED    Local Cache
-  (VizieR)  (MAST)  (NOIRLab) (IPAC)  (CSV/FITS)
+  Normalize → deduplicate → geometry/redshift/Gaia veto → ranking
+                  → pandas / Astropy / CSV / Aladin
 ```
 
 ### Modules
 
 | Module | Class / Function | Role |
 |--------|-----------------|------|
-| `pipeline.py` | `HostPipeline` | Orchestrates the full workflow, manages quick/full modes, renders Aladin visualization |
-| `catalog.py` | `GalaxyFinder` | Cone searches across all catalogs, caches results locally as CSV |
-| `image.py` | `Imager` | Retrieves FITS cutout images from Pan-STARRS and Legacy Survey DR10 |
-| `utils.py` | — | Shared imports (os, sys, numpy, pandas, astropy) |
+| `pipeline.py` | `HostPipeline` | Orchestrates quick/full workflows, partial state, and Aladin compatibility |
+| `models.py` | Localization, context, candidate, result models | Stable typed API and export records |
+| `providers.py` | `CatalogProvider` implementations | Bounded queries and schema normalization for seven services |
+| `cache.py` | `QueryCache` | Release-aware positive, negative, and stale-response cache |
+| `association.py` | Deduplication and ranking functions | Geometry, redshift compatibility, Gaia veto, and score audit trail |
+| `extraction.py` | `ImageRecovery` | Photutils detection of catalog-missed image sources |
+| `catalog.py`, `image.py` | `GalaxyFinder`, `Imager` | Legacy API and cutout compatibility |
 
 ---
 
@@ -147,19 +204,32 @@ HostPipeline run completed.
 | Catalog | Query Method | Description |
 |---------|-------------|-------------|
 | **REGALADE** | VizieR (`J/A+A/706/A284/regalade`) | Comprehensive galaxy morphology catalog with ellipticities, position angles, and redshifts. **Primary catalog for host identification.** [Paper](https://doi.org/10.1051/0004-6361/202556896) |
-| **NED** | IPAC ConeSearch API | NASA/IPAC Extragalactic Database — fallback for known objects |
+| **DESI DR1** | NOIRLab TAP | High-quality spectroscopic galaxy redshifts |
+| **SDSS DR17** | NOIRLab TAP | Spectroscopic galaxy redshifts |
+| **NED** | IPAC ConeSearch API | Cross-identifications and literature redshifts |
 
 ### Source Catalogs
 
 | Catalog | Query Method | Description |
 |---------|-------------|-------------|
-| **Pan-STARRS DR2** | MAST API (`ps1filenames.py` / `fitscut.cgi`) | Deep optical imaging for cutout retrieval and photometry |
-| **Legacy Survey DR10** | NOIRLab TAP + SIA services | Additional optical coverage, especially for southern fields |
+| **Pan-STARRS DR2** | MAST API | Optical detections, morphology proxy, and northern imaging |
+| **Legacy Survey DR10** | NOIRLab TAP + viewer cutouts | Tractor morphology, photometry, photo-z, and imaging |
+| **Gaia DR3** | NOIRLab TAP | Secure stellar-contaminant veto from astrometry/classification |
 
 ### Pipeline Modes
 
-- **Quick mode** (`quick=True`) — Queries only the REGALADE galaxy catalog. Fastest path, suitable for most EP transients.
-- **Full mode** (`quick=False`) — Queries all catalogs (REGALADE, Pan-STARRS DR2, Legacy Survey DR10, NED). More comprehensive, slower.
+- **Quick mode** — Queries REGALADE through bounded HTTP, uses `z_max=0.1`,
+  caches positive and negative responses, and has a 30-second default deadline.
+- **Full mode** — Concurrently queries REGALADE, Legacy Survey DR10 plus its
+  photo-z table, Pan-STARRS DR2, DESI DR1, SDSS DR17, NED, and Gaia DR3.  It
+  defaults to `z_max=0.5`, retains plausible galaxies without redshifts, runs
+  optional image-source recovery, and returns provenance-rich partial results
+  if one or more services fail.
+
+Both modes search beyond the formal localization by a configurable host margin,
+then separately report whether each galaxy center lies inside the localization,
+whether its footprint overlaps, and its directional-light-radius offset.  A
+returned catalog row is therefore not automatically a host association.
 
 ---
 
@@ -259,18 +329,23 @@ host_copilot/
 
 ## 🛠️ API Reference
 
-### `HostPipeline(ra, dec, r_arcsec, zcutout=0.1, quick=True, save_path='./')`
+### `HostPipeline(ra, dec, r_arcsec, zcutout=None, quick=True, save_path='./', ...)`
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `ra` | `float` | — | Right Ascension in degrees (ICRS) |
 | `dec` | `float` | — | Declination in degrees (ICRS) |
 | `r_arcsec` | `float` | — | Search radius in arcseconds |
-| `zcutout` | `float` | `0.1` | Maximum redshift for candidate galaxies |
+| `zcutout` | `float` | mode default | Maximum redshift: 0.1 quick, 0.5 full |
 | `quick` | `bool` | `True` | If True, uses REGALADE only; otherwise queries all catalogs |
 | `save_path` | `str` | `'./'` | Directory for cached catalogs and output |
 
 **Returns:** `(Aladin widget, Astropy Table)` tuple.
+
+For the new API, ``HostPipeline.search(context, config)`` returns a
+``HostSearchResult`` with candidates, provider statuses, warnings, metadata,
+and pandas/Astropy/CSV export methods.  Circular and elliptical localizations
+are supported.  Existing EP radii are interpreted as 90% containment radii.
 
 ### `GalaxyFinder(ra, dec, r_arcsec, redo=False, save_path='./')`
 
